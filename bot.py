@@ -13,9 +13,7 @@ CHANNEL_ID = int(os.environ["DISCORD_CHANNEL_ID"])
 STATE_FILE = Path("seen_decks.json")
 
 session = requests.Session()
-session.headers.update({
-    "User-Agent": "RiftboundMetaBot/1.0"
-})
+session.headers.update({"User-Agent": "RiftboundMetaBot/1.0"})
 
 
 def get_json(url):
@@ -33,14 +31,12 @@ def load_state():
 def save_state(state):
     STATE_FILE.write_text(
         json.dumps(state, ensure_ascii=False, indent=2),
-        encoding="utf-8"
+        encoding="utf-8",
     )
 
 
 def fetch_decks():
-    data = get_json(
-        f"{BASE}/tournaments?per_page=30&page=1"
-    )
+    data = get_json(f"{BASE}/tournaments?per_page=30&page=1")
 
     if not data.get("success"):
         raise RuntimeError(f"RiftMana API error: {data}")
@@ -49,16 +45,16 @@ def fetch_decks():
     decks = []
 
     for item in results:
-        tournament_id = item.get("id")
-        if not tournament_id:
+        deck_id = item.get("id")
+        if not deck_id:
             continue
 
-        deck_url = f"{BASE}/tournaments/{tournament_id}/deck"
+        deck_url = f"{BASE}/tournaments/{deck_id}/deck"
 
         try:
             detail = get_json(deck_url)
         except requests.RequestException as exc:
-            print(f"Deck {tournament_id} nicht abrufbar: {exc}")
+            print(f"Deck {deck_id} nicht abrufbar: {exc}")
             continue
 
         payload = detail.get("data", {})
@@ -67,14 +63,13 @@ def fetch_decks():
         if not cards:
             continue
 
-        key = str(tournament_id)
         decks.append({
-            "key": key,
-            "player": item.get("player_name", "Unbekannt"),
-            "legend": item.get("legend_name", "Unbekannt"),
+            "key": str(deck_id),
+            "player": item.get("player_name") or "Unbekannt",
+            "legend": item.get("legend_name") or "Unbekannt",
             "placement": item.get("placement", "?"),
-            "event": item.get("event_name", "Turnier"),
-            "date": item.get("date", ""),
+            "event": item.get("event_name") or "Turnier",
+            "date": item.get("date") or "",
             "players": item.get("players", "?"),
             "cards": cards,
             "url": deck_url,
@@ -83,32 +78,78 @@ def fetch_decks():
     return decks
 
 
-def format_deck(deck):
-    lines = [
-        "**Neue Riftbound-Deckliste**",
-        f"**Legend:** {deck['legend']}",
-        f"**Spieler:** {deck['player']}",
-        f"**Platzierung:** {deck['placement']}",
-        f"**Turnier:** {deck['event']}",
-        f"**Datum:** {deck['date']}",
-        f"**Teilnehmer:** {deck['players']}",
-        "",
-        "**Karten:**",
-    ]
+def build_embeds(deck):
+    legend = str(deck["legend"])[:250]
+    player = str(deck["player"])[:250]
+    event = str(deck["event"])[:250]
 
-    for card in deck["cards"][:50]:
-        name = card.get("name", "Unbekannte Karte")
+    # Hauptkarte mit den wichtigsten Turnierinformationen
+    main = discord.Embed(
+        title=f"NEUES RIFTBOUND-DECK | {legend}",
+        url=deck["url"],
+        description="Eine neue Deckliste wurde bei RiftMana gefunden.",
+        color=discord.Color.from_rgb(88, 101, 242),
+    )
+
+    main.add_field(name="Champion / Legend", value=legend, inline=True)
+    main.add_field(name="Platzierung", value=str(deck["placement"]), inline=True)
+    main.add_field(name="Spieler", value=player, inline=True)
+    main.add_field(name="Turnier", value=event, inline=False)
+
+    if deck["date"]:
+        main.add_field(name="Datum", value=str(deck["date"])[:100], inline=True)
+
+    if deck["players"] not in (None, "", "?"):
+        main.add_field(
+            name="Teilnehmer",
+            value=str(deck["players"])[:100],
+            inline=True,
+        )
+
+    main.set_footer(text="Riftbound Meta Bot • Deckdaten von RiftMana")
+
+    # Karten auf mehrere Embeds verteilen, falls die Liste lang ist.
+    card_lines = []
+    for card in deck["cards"]:
+        name = str(card.get("name") or "Unbekannte Karte")
         quantity = card.get("quantity", 1)
-        code = card.get("code", "")
-        suffix = f" ({code})" if code else ""
-        lines.append(f"• {quantity}x {name}{suffix}")
+        code = str(card.get("code") or "")
 
-    lines.extend([
-        "",
-        f"[Deckdaten öffnen]({deck['url']})"
-    ])
+        line = f"**{quantity}×** {name}"
+        if code:
+            line += f" (`{code}`)"
+        card_lines.append(line)
 
-    return "\n".join(lines)
+    chunks = []
+    current = []
+    current_length = 0
+
+    for line in card_lines:
+        if current and current_length + len(line) + 1 > 3500:
+            chunks.append(current)
+            current = []
+            current_length = 0
+
+        current.append(line)
+        current_length += len(line) + 1
+
+    if current:
+        chunks.append(current)
+
+    embeds = [main]
+
+    for index, chunk in enumerate(chunks):
+        card_embed = discord.Embed(
+            title="Kartenliste" if len(chunks) == 1 else
+                  f"Kartenliste • Teil {index + 1}/{len(chunks)}",
+            description="\n".join(chunk),
+            color=discord.Color.from_rgb(46, 204, 113),
+            url=deck["url"],
+        )
+        card_embed.set_footer(text="Deckdaten bei RiftMana öffnen")
+        embeds.append(card_embed)
+
+    return embeds
 
 
 async def main():
@@ -118,38 +159,40 @@ async def main():
     decks = await asyncio.to_thread(fetch_decks)
 
     if not state.get("initialized", False):
-        state["seen"] = sorted(seen | {
-            deck["key"] for deck in decks
-        })
+        state["seen"] = sorted(seen | {deck["key"] for deck in decks})
         state["initialized"] = True
         save_state(state)
         print(f"Erster Scan: {len(decks)} Decks registriert.")
         return
 
-    new_decks = [
-        deck for deck in decks
-        if deck["key"] not in seen
-    ]
+    new_decks = [deck for deck in decks if deck["key"] not in seen]
 
-    client = discord.Client(
-        intents=discord.Intents.none()
-    )
+    if not new_decks:
+        print("Keine neuen Decks gefunden.")
+        return
+
+    client = discord.Client(intents=discord.Intents.none())
 
     try:
         await client.login(TOKEN)
         channel = await client.fetch_channel(CHANNEL_ID)
 
         for deck in reversed(new_decks):
-            message = format_deck(deck)
+            embeds = build_embeds(deck)
 
-            # Discord erlaubt maximal 2000 Zeichen pro Nachricht.
-            if len(message) > 1900:
-                message = message[:1850] + "\n\n[Liste gekürzt]"
-
+            # Discord erlaubt maximal 10 Embeds pro Nachricht.
+            # Bei besonders langen Listen werden weitere Karten separat gesendet.
             await channel.send(
-                message,
-                allowed_mentions=discord.AllowedMentions.none()
+                embeds=embeds[:10],
+                allowed_mentions=discord.AllowedMentions.none(),
             )
+
+            for extra_start in range(10, len(embeds), 10):
+                await channel.send(
+                    embeds=embeds[extra_start:extra_start + 10],
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+
             seen.add(deck["key"])
 
         state["seen"] = sorted(seen)
