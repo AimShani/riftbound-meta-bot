@@ -78,38 +78,57 @@ def fetch_decks():
     return decks
 
 
-def build_embeds(deck):
-    legend = str(deck["legend"])[:250]
-    player = str(deck["player"])[:250]
-    event = str(deck["event"])[:250]
-
-    # Hauptkarte mit den wichtigsten Turnierinformationen
-    main = discord.Embed(
-        title=f"NEUES RIFTBOUND-DECK | {legend}",
-        url=deck["url"],
+def build_deck_embed(deck):
+    embed = discord.Embed(
+        title=f"RIFTBOUND-DECK | {deck['legend']}"[:256],
         description="Eine neue Deckliste wurde bei RiftMana gefunden.",
+        url=deck["url"],
         color=discord.Color.from_rgb(88, 101, 242),
     )
 
-    main.add_field(name="Champion / Legend", value=legend, inline=True)
-    main.add_field(name="Platzierung", value=str(deck["placement"]), inline=True)
-    main.add_field(name="Spieler", value=player, inline=True)
-    main.add_field(name="Turnier", value=event, inline=False)
+    embed.add_field(
+        name="Champion / Legend",
+        value=str(deck["legend"])[:1024],
+        inline=True,
+    )
+    embed.add_field(
+        name="Platzierung",
+        value=str(deck["placement"])[:1024],
+        inline=True,
+    )
+    embed.add_field(
+        name="Spieler",
+        value=str(deck["player"])[:1024],
+        inline=True,
+    )
+    embed.add_field(
+        name="Turnier",
+        value=str(deck["event"])[:1024],
+        inline=False,
+    )
 
     if deck["date"]:
-        main.add_field(name="Datum", value=str(deck["date"])[:100], inline=True)
+        embed.add_field(
+            name="Datum",
+            value=str(deck["date"])[:100],
+            inline=True,
+        )
 
     if deck["players"] not in (None, "", "?"):
-        main.add_field(
+        embed.add_field(
             name="Teilnehmer",
             value=str(deck["players"])[:100],
             inline=True,
         )
 
-    main.set_footer(text="Riftbound Meta Bot • Deckdaten von RiftMana")
+    embed.set_footer(text="Riftbound Meta Bot • Daten von RiftMana")
+    return embed
 
-    # Karten auf mehrere Embeds verteilen, falls die Liste lang ist.
+
+def build_card_embeds(deck):
+    # Separate Embeds für die Karten, damit sie garantiert mitgesendet werden.
     card_lines = []
+
     for card in deck["cards"]:
         name = str(card.get("name") or "Unbekannte Karte")
         quantity = card.get("quantity", 1)
@@ -120,6 +139,7 @@ def build_embeds(deck):
             line += f" (`{code}`)"
         card_lines.append(line)
 
+    # Teile die Kartenliste in Abschnitte auf, die Discord akzeptiert.
     chunks = []
     current = []
     current_length = 0
@@ -136,18 +156,23 @@ def build_embeds(deck):
     if current:
         chunks.append(current)
 
-    embeds = [main]
+    embeds = []
 
     for index, chunk in enumerate(chunks):
-        card_embed = discord.Embed(
-            title="Kartenliste" if len(chunks) == 1 else
-                  f"Kartenliste • Teil {index + 1}/{len(chunks)}",
+        title = "KARTENLISTE"
+        if len(chunks) > 1:
+            title += f" • TEIL {index + 1}/{len(chunks)}"
+
+        embed = discord.Embed(
+            title=title,
             description="\n".join(chunk),
-            color=discord.Color.from_rgb(46, 204, 113),
             url=deck["url"],
+            color=discord.Color.from_rgb(46, 204, 113),
         )
-        card_embed.set_footer(text="Deckdaten bei RiftMana öffnen")
-        embeds.append(card_embed)
+        embed.set_footer(
+            text=f"{len(card_lines)} Karteneinträge • Deckdaten bei RiftMana"
+        )
+        embeds.append(embed)
 
     return embeds
 
@@ -178,22 +203,21 @@ async def main():
         channel = await client.fetch_channel(CHANNEL_ID)
 
         for deck in reversed(new_decks):
-            embeds = build_embeds(deck)
-
-            # Discord erlaubt maximal 10 Embeds pro Nachricht.
-            # Bei besonders langen Listen werden weitere Karten separat gesendet.
+            # 1. Nachricht: übersichtliche Turnierdaten
             await channel.send(
-                embeds=embeds[:10],
+                embed=build_deck_embed(deck),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
 
-            for extra_start in range(10, len(embeds), 10):
+            # 2. und weitere Nachrichten: vollständige Kartenliste
+            for card_embed in build_card_embeds(deck):
                 await channel.send(
-                    embeds=embeds[extra_start:extra_start + 10],
+                    embed=card_embed,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
 
             seen.add(deck["key"])
+            print(f"Deck gepostet: {deck['legend']} – {deck['player']}")
 
         state["seen"] = sorted(seen)
         state["initialized"] = True
